@@ -21,7 +21,7 @@ from trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_d
 warnings.filterwarnings('ignore')
 
 
-def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=None, warmup_steps=None):
+def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=None, warmup_steps=None, full_save_dir=None):
     start_time = time.time()
     for step, (input_ids, labels) in enumerate(loader, start=start_step + 1):
         input_ids = input_ids.to(args.device)
@@ -57,7 +57,7 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
         global_step = epoch * iters + step
         if (global_step % args.save_interval == 0 or step == iters - 1) and is_main_process():
             model.eval()
-            ckp_dir = f'{args.save_dir}/global_step_{global_step}'
+            ckp_dir = f'{full_save_dir}/global_step_{global_step}'
             os.makedirs(ckp_dir, exist_ok=True)
             
             raw_model = model.module if isinstance(model, DistributedDataParallel) else model
@@ -83,7 +83,7 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SpongeBob Pretraining")
-    parser.add_argument("--save_dir", type=str, default="../out3", help="模型保存目录")
+    parser.add_argument("--save_dir", type=str, default="../pretrain_out", help="模型保存根目录")
     parser.add_argument('--save_weight', default='pretrain', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=2, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=128, help="batch size")
@@ -112,19 +112,23 @@ if __name__ == "__main__":
     setup_seed(42 + (dist.get_rank() if dist.is_initialized() else 0))
     
     # ========== 2. 配置目录、模型参数、检查ckp ==========
-    os.makedirs(args.save_dir, exist_ok=True)
     lm_config = SpongeBobConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers)
+    
+    # 生成 run_name（用于后续创建子目录）
+    run_name = f"h{args.hidden_size}_l{args.num_hidden_layers}_bs{args.batch_size}_lr{args.learning_rate}"
+    full_save_dir = os.path.join(args.save_dir, run_name)
+    os.makedirs(full_save_dir, exist_ok=True)
     
     # 从最新的 checkpoint 恢复
     ckp_data = None
     if args.from_resume == 1:
-        ckp_dirs = [d for d in os.listdir(args.save_dir) if d.startswith('global_step_')]
+        ckp_dirs = [d for d in os.listdir(full_save_dir) if d.startswith('global_step_')]
         if ckp_dirs:
             latest_ckp = max(ckp_dirs, key=lambda x: int(x.split('_')[-1]))
-            resume_path = f'{args.save_dir}/{latest_ckp}/resume.pth'
+            resume_path = f'{full_save_dir}/{latest_ckp}/resume.pth'
             if os.path.exists(resume_path):
                 ckp_data = torch.load(resume_path, map_location='cpu')
-                Logger(f'Found checkpoint: {args.save_dir}/{latest_ckp}')
+                Logger(f'Found checkpoint: {full_save_dir}/{latest_ckp}')
     
     # ========== 3. 设置混合精度 ==========
     device_type = "cuda" if "cuda" in args.device else "cpu"
@@ -138,7 +142,6 @@ if __name__ == "__main__":
         swanlab.login(api_key="4jqfbuJs9zDRcLAMPoDQv")
         
         swanlab_id = ckp_data.get('swanlab_id') if ckp_data else None
-        run_name = f"SpongeBob-{args.hidden_size}-{args.num_hidden_layers}L-Epoch{args.epochs}-BS{args.batch_size}-LR{args.learning_rate}"
         
         swanlab_run = swanlab.init(
             project=args.swanlab_project,
@@ -223,9 +226,9 @@ if __name__ == "__main__":
         Logger(f'DataLoader ready, starting epoch {epoch+1}...')
         if skip > 0: 
             Logger(f'Epoch [{epoch + 1}/{args.epochs}]: 跳过前{start_step}个step，从step {start_step + 1}开始')
-            train_epoch(epoch, loader, len(loader) + skip, start_step, swanlab_run, total_steps, warmup_steps)
+            train_epoch(epoch, loader, len(loader) + skip, start_step, swanlab_run, total_steps, warmup_steps, full_save_dir)
         else:
-            train_epoch(epoch, loader, len(loader), 0, swanlab_run, total_steps, warmup_steps)
+            train_epoch(epoch, loader, len(loader), 0, swanlab_run, total_steps, warmup_steps, full_save_dir)
     
     # ========== 10. 清理分布进程 ==========
     if dist.is_initialized(): dist.destroy_process_group()
