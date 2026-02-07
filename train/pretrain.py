@@ -20,6 +20,29 @@ from trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_d
 
 warnings.filterwarnings('ignore')
 
+###auto_cast用法
+# from torch.cuda.amp import GradScaler, autocast
+
+# scaler = GradScaler() # 初始化
+
+# for data, target in data_loader:
+#     optimizer.zero_grad()
+
+#     with autocast(): # 开启半精度前向传播
+#         output = model(data)
+#         loss = loss_fn(output, target)
+
+#     # 1. 放大 Loss 并计算梯度
+#     scaler.scale(loss).backward()
+
+#     # 2. scaler.step() 会先取消缩放梯度 (unscale)
+#     # 如果梯度没溢出，则调用 optimizer.step() 更新参数
+#     # 如果溢出了，则跳过这一步
+#     scaler.step(optimizer)
+
+#     # 3. 更新缩放因子（根据是否有溢出来决定下次放大多少）
+#     scaler.update()
+
 
 def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=None, warmup_steps=None, full_save_dir=None):
     start_time = time.time()
@@ -147,16 +170,7 @@ if __name__ == "__main__":
             project=args.swanlab_project,
             experiment_name=run_name,
             id=swanlab_id,
-            config={
-                "hidden_size": args.hidden_size,
-                "num_hidden_layers": args.num_hidden_layers,
-                "num_attention_heads": 12,
-                "num_key_value_heads": 4,
-                "vocab_size": 25000,
-                "max_seq_len": args.max_seq_len,
-                "learning_rate": args.learning_rate,
-                "batch_size": args.batch_size,
-            }
+            config=vars(args)
         )
         Logger(f'SwanLab initialized: {run_name}')
     
