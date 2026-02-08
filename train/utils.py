@@ -5,9 +5,7 @@ import os
 import sys
 __package__ = "train"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-import random
 import math
-import numpy as np
 import torch
 import torch.distributed as dist
 from torch.utils.data import Sampler
@@ -49,16 +47,6 @@ def init_distributed_mode():
     local_rank = int(os.environ["LOCAL_RANK"])  # 当前进程在本机上的 GPU 编号
     torch.cuda.set_device(local_rank)  # 绑定当前进程到对应 GPU
     return local_rank
-
-
-def setup_seed(seed: int):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
 
 class SkipBatchSampler(Sampler):
