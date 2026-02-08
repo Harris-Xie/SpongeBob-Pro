@@ -1,6 +1,9 @@
 import os
 import sys
 
+# 禁用 tokenizers 并行警告
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
 __package__ = "trainer"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -16,7 +19,8 @@ from torch.utils.data import DataLoader, DistributedSampler
 from model.config import SpongeBobConfig
 from model.model_spongebob_pro import SpongeBobForCausalLM
 from dataset.pretrain_dataset import PretrainDataset
-from trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, SkipBatchSampler
+from utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, SkipBatchSampler
+from benchmark.evaluator import run_benchmark
 
 warnings.filterwarnings('ignore')
 
@@ -69,15 +73,17 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
 
             optimizer.zero_grad(set_to_none=True)
 
+        global_step = epoch * iters + step
+        
         if step % args.log_interval == 0 or step == iters - 1:
             spend_time = time.time() - start_time
             current_loss = loss.item() * args.accumulation_steps
             current_lr = optimizer.param_groups[-1]['lr']
             eta_min = spend_time / (step + 1) * iters // 60 - spend_time // 60
             Logger(f'Epoch:[{epoch + 1}/{args.epochs}]({step}/{iters}), loss: {current_loss:.4f}, lr: {current_lr:.8f}, epoch_time: {eta_min:.1f}min')
-            if swanlab: swanlab.log({"loss": current_loss, "learning_rate": current_lr, "epoch_time": eta_min})
-
-        global_step = epoch * iters + step
+            if swanlab: swanlab.log({"loss": current_loss, "learning_rate": current_lr, "eta_time": eta_min}, step=global_step)
+        
+        # 保存 checkpoint
         if (global_step % args.save_interval == 0 or step == iters - 1) and is_main_process():
             model.eval()
             ckp_dir = f'{full_save_dir}/global_step_{global_step}'
@@ -100,6 +106,17 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
             
             Logger(f'Saved checkpoint: {ckp_dir}')
             model.train()
+        
+        # Benchmark 评测（独立于保存）
+        if args.eval_bench == 1 and tokenizer is not None and global_step % args.eval_interval == 0 and is_main_process():
+            model.eval()
+            c3_path = '/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/benchmark/clue_c3_eval_500.jsonl'
+            xcopa_path = '/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/benchmark/xcopa_zh_merged.jsonl'
+            eval_results = run_benchmark(model, tokenizer, c3_path, xcopa_path)
+            if swanlab_run:
+                swanlab_run.log(eval_results, step=global_step)
+            Logger(f'Benchmark results: {eval_results}')
+            model.train()
 
         del input_ids, labels, res, loss
 
@@ -121,12 +138,14 @@ if __name__ == "__main__":
     parser.add_argument('--hidden_size', default=768, type=int, help="隐藏层维度")
     parser.add_argument('--num_hidden_layers', default=12, type=int, help="隐藏层数量")
     parser.add_argument('--max_seq_len', default=512, type=int, help="序列长度")
-    parser.add_argument("--data_path", type=str, default="/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/data/pretrain_data/spongebob_pretrain_512.bin", help="预处理后的.bin文件路径")
+    parser.add_argument("--data_path", type=str, default="/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/data/pretrain_data/final_with_sft_512.bin", help="预处理后的.bin文件路径")
     parser.add_argument('--from_weight', default='none', type=str, help="基于哪个权重训练，为none则从头开始")
     parser.add_argument('--from_resume', default=0, type=int, choices=[0, 1], help="是否自动检测&续训（0=否，1=是）")
     parser.add_argument("--use_swanlab", type=int, default=1, choices=[0, 1], help="是否使用swanlab（0=否，1=是）")
     parser.add_argument("--swanlab_project", type=str, default="SpongeBob-Pretrain", help="swanlab项目名")
     parser.add_argument("--use_compile", default=1, type=int, choices=[0, 1], help="是否使用torch.compile加速（0=否，1=是）")
+    parser.add_argument("--eval_bench", default=1, type=int, choices=[0, 1], help="是否评测benchmark（0=否，1=是）")
+    parser.add_argument("--eval_interval", type=int, default=100, help="评测间隔步数")
     args = parser.parse_args()
 
     # ========== 1. 初始化环境和随机种子 ==========
@@ -186,6 +205,14 @@ if __name__ == "__main__":
     model = model.to(args.device)
     Logger(f'Model parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M')
     
+    # 加载 tokenizer（用于 benchmark 评测）
+    if args.eval_bench == 1:
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained('/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/tokenizer_15k')
+        Logger('Tokenizer loaded for benchmark evaluation')
+    else:
+        tokenizer = None
+    
     if args.use_compile == 1:
         model = torch.compile(model)
         Logger('torch.compile enabled')
@@ -227,6 +254,18 @@ if __name__ == "__main__":
     warmup_steps = int(total_steps * 0.03)  # 3% warmup
     Logger(f'World size: {world_size}, Steps per epoch: {steps_per_epoch}')
     Logger(f'Total training steps: {total_steps}, Warmup steps: {warmup_steps} (3%)')
+    
+    # ========== 8.5. 初始评测 (step 0) ==========
+    if args.eval_bench == 1 and tokenizer is not None and is_main_process() and start_epoch == 0 and start_step == 0:
+        Logger('Running initial benchmark evaluation (step 0)...')
+        model.eval()
+        c3_path = '/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/benchmark/clue_c3_eval_500.jsonl'
+        xcopa_path = '/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/benchmark/xcopa_zh_merged.jsonl'
+        eval_results = run_benchmark(model, tokenizer, c3_path, xcopa_path)
+        if swanlab_run:
+            swanlab_run.log(eval_results, step=0)
+        Logger(f'Initial benchmark results (step 0): {eval_results}')
+        model.train()
     
     # ========== 9. 开始训练 ==========
     Logger(f'Starting training: {args.epochs} epochs, batch_size={args.batch_size}')

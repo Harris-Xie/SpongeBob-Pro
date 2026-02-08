@@ -9,9 +9,9 @@ from model.model_spongebob_pro import SpongeBobForCausalLM
 
 def main():
     parser = argparse.ArgumentParser(description="SpongeBob模型交互对话")
-    parser.add_argument('--model_path', default='/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/out_sft/exp_thinking/global_step_782/sft_768.pth', type=str, help="模型权重路径（.pth文件）")
+    parser.add_argument('--model_path', default='/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/pretrain_out/h768_l12_bs128_lr0.001/global_step_2889/pretrain_768.pth', type=str, help="模型权重路径（.pth文件）")
     parser.add_argument('--tokenizer_path', default='./tokenizer_15k', type=str, help="Tokenizer路径")
-    parser.add_argument('--model_type', default='sft', type=str, choices=['pretrain', 'sft'], help="模型类型：pretrain（文本续写）或 sft（对话）")
+    parser.add_argument('--model_type', default='pretrain', type=str, choices=['pretrain', 'sft'], help="模型类型：pretrain（文本续写）或 sft（对话）")
     parser.add_argument('--hidden_size', default=768, type=int, help="隐藏层维度")
     parser.add_argument('--num_hidden_layers', default=12, type=int, help="隐藏层数量")
     parser.add_argument('--max_new_tokens', default=2048, type=int, help="最大生成长度")
