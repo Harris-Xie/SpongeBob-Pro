@@ -115,8 +115,8 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
         # Benchmark 评测 [DDP] 仅主进程跑；without_ddp 无 is_main_process() 判断
         if args.eval_bench == 1 and tokenizer is not None and global_step % args.eval_interval == 0 and is_main_process():
             model.eval()
-            c3_path = '/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/benchmark/clue_c3_eval_500.jsonl'
-            xcopa_path = '/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/benchmark/xcopa_zh_merged.jsonl'
+            c3_path = ''
+            xcopa_path = ''
             eval_results = run_benchmark(model, tokenizer, c3_path, xcopa_path)
             if swanlab_run:
                 swanlab_run.log(eval_results, step=global_step)
@@ -143,7 +143,7 @@ if __name__ == "__main__":
     parser.add_argument('--hidden_size', default=768, type=int, help="隐藏层维度")
     parser.add_argument('--num_hidden_layers', default=12, type=int, help="隐藏层数量")
     parser.add_argument('--max_seq_len', default=512, type=int, help="序列长度")
-    parser.add_argument("--data_path", type=str, default="/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/data/pretrain_data/SpongeBobPRO_pretrain_512_final.bin", help="预处理后的.bin文件路径")
+    parser.add_argument("--data_path", type=str, default="", help="预处理后的.bin文件路径")
     parser.add_argument('--from_weight', default='none', type=str, help="基于哪个权重训练，为none则从头开始")
     parser.add_argument('--from_resume', default=0, type=int, choices=[0, 1], help="是否自动检测&续训（0=否，1=是）")
     parser.add_argument("--use_swanlab", type=int, default=1, choices=[0, 1], help="是否使用swanlab（0=否，1=是）")
@@ -213,7 +213,7 @@ if __name__ == "__main__":
     # 加载 tokenizer（用于 benchmark 评测）
     if args.eval_bench == 1:
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained('/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/tokenizer_15k')
+        tokenizer = AutoTokenizer.from_pretrained('')
         Logger('Tokenizer loaded for benchmark evaluation')
     else:
         tokenizer = None
@@ -268,8 +268,8 @@ if __name__ == "__main__":
     if args.eval_bench == 1 and tokenizer is not None and is_main_process() and start_epoch == 0 and start_step == 0:
         Logger('Running initial benchmark evaluation (step 0)...')
         model.eval()
-        c3_path = '/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/benchmark/clue_c3_eval_500.jsonl'
-        xcopa_path = '/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/benchmark/xcopa_zh_merged.jsonl'
+        c3_path = ''
+        xcopa_path = ''
         eval_results = run_benchmark(model, tokenizer, c3_path, xcopa_path)
         if swanlab_run:
             swanlab_run.log(eval_results, step=0)
