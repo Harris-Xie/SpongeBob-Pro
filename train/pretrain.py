@@ -1,25 +1,30 @@
+"""
+SpongeBob 预训练脚本（支持多卡 DDP）
+与 pretrain_without_ddp.py 的差异已用 [DDP] 标出：主要为分布式初始化、Sampler、DDP 包模型、
+主进程判断（保存/评测）、总步数按 world_size 分片、训练循环用 train_sampler、结束时 destroy_process_group。
+"""
 import os
 import sys
 
 # 禁用 tokenizers 并行警告
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
-__package__ = "trainer"
+__package__ = "train"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import argparse
 import time
 import warnings
 import torch
-import torch.distributed as dist
+import torch.distributed as dist  # [DDP] 多进程/多 GPU 通信；without_ddp 无此 import
 from contextlib import nullcontext
 from torch import optim, nn
-from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.nn.parallel import DistributedDataParallel  # [DDP] DDP 包模型；without_ddp 无
+from torch.utils.data import DataLoader, DistributedSampler  # [DDP] 多卡用 DistributedSampler；without_ddp 仅 DataLoader
 from model.config import SpongeBobConfig
 from model.model_spongebob_pro import SpongeBobForCausalLM
 from dataset.pretrain_dataset import PretrainDataset
-from utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, SkipBatchSampler
+from utils import get_lr, Logger, is_main_process, init_distributed_mode, SkipBatchSampler  # [DDP] is_main_process/init_distributed_mode 仅 DDP 用；without_ddp 无
 from benchmark.evaluator import run_benchmark
 
 warnings.filterwarnings('ignore')
@@ -83,12 +88,12 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
             Logger(f'Epoch:[{epoch + 1}/{args.epochs}]({step}/{iters}), loss: {current_loss:.4f}, lr: {current_lr:.8f}, epoch_time: {eta_min:.1f}min')
             if swanlab: swanlab.log({"loss": current_loss, "learning_rate": current_lr, "eta_time": eta_min}, step=global_step)
         
-        # 保存 checkpoint
+        # 保存 checkpoint [DDP] 仅主进程写盘；without_ddp 无 is_main_process() 判断
         if (global_step % args.save_interval == 0 or step == iters - 1) and is_main_process():
             model.eval()
             ckp_dir = f'{full_save_dir}/global_step_{global_step}'
             os.makedirs(ckp_dir, exist_ok=True)
-            
+            # [DDP] DDP 下取 .module 才是真实模型；without_ddp 仅 getattr(model, '_orig_mod', model)
             raw_model = model.module if isinstance(model, DistributedDataParallel) else model
             raw_model = getattr(raw_model, '_orig_mod', raw_model)
             state_dict = {k: v.half().cpu() for k, v in raw_model.state_dict().items()}
@@ -107,7 +112,7 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
             Logger(f'Saved checkpoint: {ckp_dir}')
             model.train()
         
-        # Benchmark 评测（独立于保存）
+        # Benchmark 评测 [DDP] 仅主进程跑；without_ddp 无 is_main_process() 判断
         if args.eval_bench == 1 and tokenizer is not None and global_step % args.eval_interval == 0 and is_main_process():
             model.eval()
             c3_path = '/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/benchmark/clue_c3_eval_500.jsonl'
@@ -123,7 +128,7 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SpongeBob Pretraining")
-    parser.add_argument("--save_dir", type=str, default="../pretrain_out", help="模型保存根目录")
+    parser.add_argument("--save_dir", type=str, default="../pretrain_out/exp_mini", help="模型保存根目录")
     parser.add_argument('--save_weight', default='pretrain', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=2, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=128, help="batch size")
@@ -138,7 +143,7 @@ if __name__ == "__main__":
     parser.add_argument('--hidden_size', default=768, type=int, help="隐藏层维度")
     parser.add_argument('--num_hidden_layers', default=12, type=int, help="隐藏层数量")
     parser.add_argument('--max_seq_len', default=512, type=int, help="序列长度")
-    parser.add_argument("--data_path", type=str, default="/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/data/pretrain_data/final_with_sft_512.bin", help="预处理后的.bin文件路径")
+    parser.add_argument("--data_path", type=str, default="/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/data/pretrain_data/SpongeBobPRO_pretrain_512_final.bin", help="预处理后的.bin文件路径")
     parser.add_argument('--from_weight', default='none', type=str, help="基于哪个权重训练，为none则从头开始")
     parser.add_argument('--from_resume', default=0, type=int, choices=[0, 1], help="是否自动检测&续训（0=否，1=是）")
     parser.add_argument("--use_swanlab", type=int, default=1, choices=[0, 1], help="是否使用swanlab（0=否，1=是）")
@@ -148,11 +153,11 @@ if __name__ == "__main__":
     parser.add_argument("--eval_interval", type=int, default=100, help="评测间隔步数")
     args = parser.parse_args()
 
-    # ========== 1. 初始化环境和随机种子 ==========
-    local_rank = init_distributed_mode()
-    if dist.is_initialized(): args.device = f"cuda:{local_rank}"
-    setup_seed(42 + (dist.get_rank() if dist.is_initialized() else 0))
-    
+    # ========== 1. [DDP] 初始化分布式环境 ==========
+    # without_ddp 无此步骤，直接进入配置目录
+    local_rank = init_distributed_mode()  # 多卡时初始化进程组并返回本卡 GPU 号
+    if dist.is_initialized(): args.device = f"cuda:{local_rank}"  # DDP 时每进程用不同 GPU
+
     # ========== 2. 配置目录、模型参数、检查ckp ==========
     lm_config = SpongeBobConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers)
     
@@ -179,7 +184,7 @@ if __name__ == "__main__":
     
     # ========== 4. 配置swanlab ==========
     swanlab_run = None
-    if args.use_swanlab and is_main_process():
+    if args.use_swanlab and is_main_process():  # [DDP] 仅主进程上报；without_ddp 无 is_main_process()
         import swanlab
         swanlab.login(api_key="4jqfbuJs9zDRcLAMPoDQv")
         
@@ -220,6 +225,7 @@ if __name__ == "__main__":
     # 数据集（加载预处理好的.bin文件）
     Logger('Loading dataset...')
     train_ds = PretrainDataset(args.data_path, seq_len=args.max_seq_len)
+    # [DDP] 多卡用 DistributedSampler 分片；without_ddp 无 train_sampler，后面用 indices
     train_sampler = DistributedSampler(train_ds) if dist.is_initialized() else None
     Logger('Dataset ready')
     
@@ -240,14 +246,16 @@ if __name__ == "__main__":
         start_step = ckp_data.get('step', 0)
         Logger(f'Checkpoint loaded: epoch={start_epoch}, step={start_step}')
     
-    # ========== 7. DDP包模型 ==========
+    # ========== 7. [DDP] DDP 包模型 ==========
+    # without_ddp 无此整段，不包 DDP
     if dist.is_initialized():
         Logger('Wrapping model with DDP...')
         model._ddp_params_and_buffers_to_ignore = {"freqs_cos", "freqs_sin"}
         model = DistributedDataParallel(model, device_ids=[local_rank])
         Logger('DDP ready')
-    
-    # ========== 8. 计算总步数（考虑 DDP 分片）==========
+
+    # ========== 8. 计算总步数 ==========
+    # [DDP] 多卡时除以 world_size；without_ddp 为 len(train_ds) // args.batch_size
     world_size = dist.get_world_size() if dist.is_initialized() else 1
     steps_per_epoch = len(train_ds) // (args.batch_size * world_size)
     total_steps = args.epochs * steps_per_epoch
@@ -256,6 +264,7 @@ if __name__ == "__main__":
     Logger(f'Total training steps: {total_steps}, Warmup steps: {warmup_steps} (3%)')
     
     # ========== 8.5. 初始评测 (step 0) ==========
+    # [DDP] 仅主进程评测；without_ddp 无 is_main_process()
     if args.eval_bench == 1 and tokenizer is not None and is_main_process() and start_epoch == 0 and start_step == 0:
         Logger('Running initial benchmark evaluation (step 0)...')
         model.eval()
@@ -270,9 +279,10 @@ if __name__ == "__main__":
     # ========== 9. 开始训练 ==========
     Logger(f'Starting training: {args.epochs} epochs, batch_size={args.batch_size}')
     for epoch in range(start_epoch, args.epochs):
-        train_sampler and train_sampler.set_epoch(epoch)
-        setup_seed(42 + epoch); indices = torch.randperm(len(train_ds)).tolist()
+        train_sampler and train_sampler.set_epoch(epoch)  # [DDP] 多卡时打乱各卡分片；without_ddp 无此行
+        indices = torch.randperm(len(train_ds)).tolist()
         skip = start_step if (epoch == start_epoch and start_step > 0) else 0
+        # [DDP] 多卡用 train_sampler，单卡用 indices；without_ddp 仅 SkipBatchSampler(indices, ...)
         batch_sampler = SkipBatchSampler(train_sampler or indices, args.batch_size, skip)
         Logger(f'Creating DataLoader for epoch {epoch+1}...')
         loader = DataLoader(train_ds, batch_sampler=batch_sampler, num_workers=args.num_workers, pin_memory=True)
@@ -283,5 +293,6 @@ if __name__ == "__main__":
         else:
             train_epoch(epoch, loader, len(loader), 0, swanlab_run, total_steps, warmup_steps, full_save_dir)
     
-    # ========== 10. 清理分布进程 ==========
+    # ========== 10. [DDP] 清理分布式进程组 ==========
+    # without_ddp 无此步骤，仅 Logger('Training done.')
     if dist.is_initialized(): dist.destroy_process_group()
