@@ -150,7 +150,7 @@ if __name__ == "__main__":
     parser.add_argument("--swanlab_project", type=str, default="SpongeBob-Pretrain", help="swanlab项目名")
     parser.add_argument("--use_compile", default=1, type=int, choices=[0, 1], help="是否使用torch.compile加速（0=否，1=是）")
     parser.add_argument("--eval_bench", default=1, type=int, choices=[0, 1], help="是否评测benchmark（0=否，1=是）")
-    parser.add_argument("--eval_interval", type=int, default=100, help="评测间隔步数")
+    parser.add_argument("--eval_interval", type=int, default=1000, help="评测间隔步数")
     args = parser.parse_args()
 
     # ========== 1. [DDP] 初始化分布式环境 ==========
