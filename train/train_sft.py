@@ -1,6 +1,13 @@
 """
 SFT 训练脚本：由 pretrain.py 复制后做少量修改得到，便于与预训练对比讲解。
 改动处均用 # [SFT] 标出。
+
+主要差异：
+1. 数据集：PretrainDataset(.bin) → SFTDataset(jsonl 对话数据，只算 assistant loss)
+2. Tokenizer：SFT 需提前加载（Dataset 需要），pretrain 仅评测时加载
+3. 模型加载：pretrain 用 from_pretrained，SFT 用 load_state_dict 加载 .pth
+4. 评测方式：pretrain 用 C3/XCOPA benchmark，SFT 用 mini_bench + Ollama Judge 生成式评测
+5. 新增参数：tokenizer_path, ollama_url, ollama_model
 """
 import os
 import sys
@@ -21,10 +28,10 @@ from contextlib import nullcontext
 from torch import optim, nn
 from torch.nn.parallel import DistributedDataParallel  # DDP：多卡同步梯度
 from torch.utils.data import DataLoader, DistributedSampler  # 每卡分片数据，不重复
-from transformers import AutoTokenizer  # [SFT] SFT 需一开始就加载 tokenizer（给 Dataset 用）
+from transformers import AutoTokenizer  # [SFT] SFT 需一开始就加载 tokenizer（给 SFTDataset 用），pretrain 仅在 eval_bench=1 时加载
 from model.config import SpongeBobConfig
 from model.model_spongebob_pro import SpongeBobForCausalLM
-from dataset.sft_dataset import SFTDataset  # [SFT] 预训练用 PretrainDataset，SFT 用 SFTDataset（jsonl + 只算 assistant loss）
+from dataset.sft_dataset import SFTDataset  # [SFT] pretrain 用 PretrainDataset(.bin)，SFT 用 SFTDataset(jsonl + 只算 assistant loss)
 from utils import get_lr, Logger, is_main_process, init_distributed_mode, SkipBatchSampler
 
 warnings.filterwarnings('ignore')
@@ -66,7 +73,7 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
             Logger(f'Epoch:[{epoch + 1}/{args.epochs}]({step}/{iters}), loss: {current_loss:.4f}, lr: {current_lr:.8f}, epoch_time: {eta_min:.1f}min')
             if swanlab: swanlab.log({"loss": current_loss, "learning_rate": current_lr, "eta_time": eta_min}, step=global_step)
 
-        # 保存 checkpoint（仅主进程写盘，与 pretrain 相同）
+        # 保存 checkpoint（仅主进程写盘，逻辑与 pretrain.py 完全相同）
         if (global_step % args.save_interval == 0 or step == iters - 1) and is_main_process():
             model.eval()
             ckp_dir = f'{full_save_dir}/global_step_{global_step}'
@@ -89,7 +96,8 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
             Logger(f'Saved checkpoint: {ckp_dir}')
             model.train()
 
-        # mini_bench：每到 eval_interval 用当前模型推理，异步 Ollama Judge
+        # [SFT] mini_bench 评测：每到 eval_interval 用当前模型推理，异步 Ollama Judge
+        # pretrain 用 run_benchmark (C3/XCOPA)，SFT 用 run_inference + run_judge_async (生成式评测)
         if getattr(args, "eval_interval", 0) > 0 and global_step % args.eval_interval == 0 and is_main_process():
             from benchmark.mini_bench.eval import run_inference, run_judge_async
             raw = model.module if isinstance(model, DistributedDataParallel) else model
@@ -110,8 +118,9 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SpongeBob SFT Training")  # [SFT] description
-    # [SFT] 以下仅默认值不同：save_dir, save_weight, epochs, max_seq_len, data_path, tokenizer_path, from_weight, swanlab_project
+    parser = argparse.ArgumentParser(description="SpongeBob SFT Training")
+    # [SFT] 以下参数默认值与 pretrain.py 不同：save_dir, save_weight, epochs, data_path, from_weight, swanlab_project
+    # [SFT] 新增参数：tokenizer_path, ollama_url, ollama_model
     parser.add_argument("--save_dir", type=str, default="../out_sft/exp_4", help="模型保存目录")
     parser.add_argument('--save_weight', default='sft', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=3, help="训练轮数")
@@ -128,14 +137,15 @@ if __name__ == "__main__":
     parser.add_argument('--num_hidden_layers', default=12, type=int, help="隐藏层数量")
     parser.add_argument('--max_seq_len', default=512, type=int, help="序列长度")
     parser.add_argument("--data_path", type=str, default="/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/data_raw/mini/spongebob_sft.jsonl", help="SFT 数据 jsonl 路径")
-    parser.add_argument("--tokenizer_path", type=str, default="../tokenizer_15k", help="tokenizer 路径")  # [SFT] 新增
+    parser.add_argument("--tokenizer_path", type=str, default="../tokenizer_15k", help="tokenizer 路径")  # [SFT] 新增：SFTDataset 需要 tokenizer
     parser.add_argument('--from_weight', default='/apdcephfs_qy4/share_302593112/huaibingxie/SpongeBob/pretrain_out/h768_l12_bs128_lr0.001/global_step_5779/pretrain_768.pth', type=str, help="基于哪个权重训练，为 none 则从头开始")
     parser.add_argument('--from_resume', default=0, type=int, choices=[0, 1], help="是否自动检测&续训（0=否，1=是）")
     parser.add_argument("--use_swanlab", type=int, default=1, choices=[0, 1], help="是否使用 swanlab（0=否，1=是）")
     parser.add_argument("--swanlab_project", type=str, default="SpongeBob-SFT", help="swanlab 项目名")
     parser.add_argument("--use_compile", default=1, type=int, choices=[0, 1], help="是否使用 torch.compile 加速（0=否，1=是）")
+    # [SFT] 新增：mini_bench 评测参数（pretrain 也有 eval_interval 但用于 C3/XCOPA）
     parser.add_argument("--eval_interval", type=int, default=1000, help="每隔多少 step 跑 mini_bench（0=关闭），用当前模型推理+Ollama Judge 打分")
-    parser.add_argument("--ollama_url", type=str, default="http://127.0.0.1:11434", help="Judge 模型地址")
+    parser.add_argument("--ollama_url", type=str, default="http://127.0.0.1:11434", help="Ollama 服务地址")
     parser.add_argument("--ollama_model", type=str, default="qwen3:1.7b", help="Judge 模型名")
     args = parser.parse_args()
 
@@ -183,12 +193,12 @@ if __name__ == "__main__":
         Logger(f'SwanLab initialized: {run_name}')
 
     # ========== 5. 定义模型、数据、优化器 ==========
-    # [SFT] 先加载 tokenizer（SFT 数据集需要）
+    # [SFT] 先加载 tokenizer（SFT 数据集需要，pretrain 仅在 eval_bench=1 时加载）
     Logger(f'Loading tokenizer from {args.tokenizer_path}')
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
 
     # 创建/加载模型
-    # [SFT] 用 load_state_dict 加载 .pth，pretrain 用 from_pretrained
+    # [SFT] 用 load_state_dict 加载 .pth 权重文件，pretrain 用 from_pretrained 加载模型目录
     if args.from_weight != 'none' and os.path.exists(args.from_weight):
         Logger(f'Loading model from {args.from_weight}')
         model = SpongeBobForCausalLM(lm_config)
@@ -204,7 +214,8 @@ if __name__ == "__main__":
         model = torch.compile(model)
         Logger('torch.compile enabled')
 
-    # [SFT] 数据集：SFTDataset(jsonl, tokenizer, max_length)，pretrain 为 PretrainDataset(.bin, seq_len)
+    # [SFT] 数据集：SFTDataset 读取 jsonl 对话数据，只计算 assistant 部分的 loss
+    # pretrain 用 PretrainDataset 读取预处理好的 .bin 文件，计算全部 token 的 loss
     Logger('Loading dataset...')
     train_ds = SFTDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
     train_sampler = DistributedSampler(train_ds) if dist.is_initialized() else None
