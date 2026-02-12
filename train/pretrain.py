@@ -25,7 +25,9 @@ from model.config import SpongeBobConfig
 from model.model_spongebob_pro import SpongeBobForCausalLM
 from dataset.pretrain_dataset import PretrainDataset
 from utils import get_lr, Logger, is_main_process, init_distributed_mode, SkipBatchSampler  # [DDP] is_main_process/init_distributed_mode 仅 DDP 用；without_ddp 无
-from benchmark.evaluator import run_benchmark
+from benchmark.pretrain.evaluator import run_benchmark
+
+_BENCH_PRETRAIN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "benchmark", "pretrain")
 
 warnings.filterwarnings('ignore')
 
@@ -115,8 +117,8 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
         # Benchmark 评测 [DDP] 仅主进程跑；without_ddp 无 is_main_process() 判断
         if args.eval_bench == 1 and tokenizer is not None and global_step % args.eval_interval == 0 and is_main_process():
             model.eval()
-            c3_path = ''
-            xcopa_path = ''
+            c3_path = os.path.join(_BENCH_PRETRAIN_DIR, "clue_c3_eval_500.jsonl")
+            xcopa_path = os.path.join(_BENCH_PRETRAIN_DIR, "xcopa_zh_merged.jsonl")
             eval_results = run_benchmark(model, tokenizer, c3_path, xcopa_path)
             if swanlab_run:
                 swanlab_run.log(eval_results, step=global_step)
@@ -139,7 +141,7 @@ if __name__ == "__main__":
     parser.add_argument("--accumulation_steps", type=int, default=1, help="梯度累积步数")
     parser.add_argument("--grad_clip", type=float, default=1.0, help="梯度裁剪阈值")
     parser.add_argument("--log_interval", type=int, default=10, help="日志打印间隔")
-    parser.add_argument("--save_interval", type=int, default=1000, help="模型保存间隔")
+    parser.add_argument("--save_interval", type=int, default=3000, help="模型保存间隔")
     parser.add_argument('--hidden_size', default=768, type=int, help="隐藏层维度")
     parser.add_argument('--num_hidden_layers', default=12, type=int, help="隐藏层数量")
     parser.add_argument('--max_seq_len', default=512, type=int, help="序列长度")
@@ -268,8 +270,8 @@ if __name__ == "__main__":
     if args.eval_bench == 1 and tokenizer is not None and is_main_process() and start_epoch == 0 and start_step == 0:
         Logger('Running initial benchmark evaluation (step 0)...')
         model.eval()
-        c3_path = ''
-        xcopa_path = ''
+        c3_path = os.path.join(_BENCH_PRETRAIN_DIR, "clue_c3_eval_500.jsonl")
+        xcopa_path = os.path.join(_BENCH_PRETRAIN_DIR, "xcopa_zh_merged.jsonl")
         eval_results = run_benchmark(model, tokenizer, c3_path, xcopa_path)
         if swanlab_run:
             swanlab_run.log(eval_results, step=0)
