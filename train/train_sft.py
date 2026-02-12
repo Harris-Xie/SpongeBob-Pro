@@ -95,7 +95,7 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
             raw = model.module if isinstance(model, DistributedDataParallel) else model
             raw = getattr(raw, "_orig_mod", raw)
             model.eval()
-            pairs = run_inference(raw, tokenizer, device=args.device)
+            pairs = run_inference(raw, tokenizer, device=args.device, num_samples=1)
             model.train()
             
             valid_dir = os.path.join(full_save_dir, "valid_samples")
