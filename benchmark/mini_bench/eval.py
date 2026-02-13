@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 mini_bench 评测：推理 + Judge（使用 DeepSeek API）
-key:sk-68366af796c84954a1ca0de296dfe632
 依赖：pip install openai
 环境变量：export DEEPSEEK_API_KEY="your-key-here"
 """
