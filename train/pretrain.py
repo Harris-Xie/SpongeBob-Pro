@@ -196,6 +196,7 @@ if __name__ == "__main__":
             project=args.swanlab_project,
             experiment_name=run_name,
             id=swanlab_id,
+            resume=True,
             config=vars(args)
         )
         Logger(f'SwanLab initialized: {run_name}')
@@ -241,7 +242,11 @@ if __name__ == "__main__":
     start_epoch, start_step = 0, 0
     if ckp_data:
         Logger('Loading checkpoint...')
-        model.load_state_dict(ckp_data['model'])
+        if args.use_compile == 1:
+            raw_model = getattr(model, '_orig_mod', model)
+            raw_model.load_state_dict(ckp_data['model'])
+        else:
+            model.load_state_dict(ckp_data['model'])
         optimizer.load_state_dict(ckp_data['optimizer'])
         scaler.load_state_dict(ckp_data['scaler'])
         start_epoch = ckp_data['epoch']
