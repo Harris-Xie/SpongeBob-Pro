@@ -10,7 +10,9 @@ import sys
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
 __package__ = "train"
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 import argparse
 import time
@@ -25,9 +27,9 @@ from model.config import SpongeBobConfig
 from model.model_spongebob_pro import SpongeBobForCausalLM
 from dataset.pretrain_dataset import PretrainDataset
 from utils import get_lr, Logger, is_main_process, init_distributed_mode, SkipBatchSampler  # [DDP] is_main_process/init_distributed_mode 仅 DDP 用；without_ddp 无
-from benchmark.pretrain.evaluator import run_benchmark
+from benchmark.evaluator import run_benchmark
 
-_BENCH_PRETRAIN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "benchmark", "pretrain")
+_BENCH_PRETRAIN_DIR = os.path.join(_REPO_ROOT, "benchmark")
 
 warnings.filterwarnings('ignore')
 
@@ -117,9 +119,7 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
         # Benchmark 评测 [DDP] 仅主进程跑；without_ddp 无 is_main_process() 判断
         if args.eval_bench == 1 and tokenizer is not None and global_step % args.eval_interval == 0 and is_main_process():
             model.eval()
-            c3_path = os.path.join(_BENCH_PRETRAIN_DIR, "clue_c3_eval_500.jsonl")
-            xcopa_path = os.path.join(_BENCH_PRETRAIN_DIR, "xcopa_zh_merged.jsonl")
-            eval_results = run_benchmark(model, tokenizer, c3_path, xcopa_path)
+            eval_results = run_benchmark(model, tokenizer, args.c3_path, args.xcopa_path)
             if swanlab_run:
                 swanlab_run.log(eval_results, step=global_step)
             Logger(f'Benchmark results: {eval_results}')
@@ -153,6 +153,9 @@ if __name__ == "__main__":
     parser.add_argument("--use_compile", default=1, type=int, choices=[0, 1], help="是否使用torch.compile加速（0=否，1=是）")
     parser.add_argument("--eval_bench", default=1, type=int, choices=[0, 1], help="是否评测benchmark（0=否，1=是）")
     parser.add_argument("--eval_interval", type=int, default=1000, help="评测间隔步数")
+    parser.add_argument("--tokenizer_path", type=str, default="tokenizer_15k", help="benchmark评测使用的tokenizer路径")
+    parser.add_argument("--c3_path", type=str, default=os.path.join(_BENCH_PRETRAIN_DIR, "clue_c3_eval_500.jsonl"), help="C3 benchmark数据路径")
+    parser.add_argument("--xcopa_path", type=str, default=os.path.join(_BENCH_PRETRAIN_DIR, "xcopa_zh_merged.jsonl"), help="XCOPA benchmark数据路径")
     args = parser.parse_args()
 
     # ========== 1. [DDP] 初始化分布式环境 ==========
@@ -164,7 +167,7 @@ if __name__ == "__main__":
     lm_config = SpongeBobConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers)
     
     # 生成 run_name（用于后续创建子目录）
-    run_name = f"h{args.hidden_size}_l{args.num_hidden_layers}_bs{args.batch_size}_lr{args.learning_rate}"
+    run_name = f"h{args.hidden_size}_l{args.num_hidden_layers}_bs{args.batch_size}_lr{args.learning_rate}_{time.strftime('%Y%m%d_%H%M%S')}"
     full_save_dir = os.path.join(args.save_dir, run_name)
     os.makedirs(full_save_dir, exist_ok=True)
     
@@ -219,7 +222,7 @@ if __name__ == "__main__":
     # 加载 tokenizer（用于 benchmark 评测）
     if args.eval_bench == 1:
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained('')
+        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
         Logger('Tokenizer loaded for benchmark evaluation')
     else:
         tokenizer = None
@@ -278,9 +281,7 @@ if __name__ == "__main__":
     if args.eval_bench == 1 and tokenizer is not None and is_main_process() and start_epoch == 0 and start_step == 0:
         Logger('Running initial benchmark evaluation (step 0)...')
         model.eval()
-        c3_path = os.path.join(_BENCH_PRETRAIN_DIR, "clue_c3_eval_500.jsonl")
-        xcopa_path = os.path.join(_BENCH_PRETRAIN_DIR, "xcopa_zh_merged.jsonl")
-        eval_results = run_benchmark(model, tokenizer, c3_path, xcopa_path)
+        eval_results = run_benchmark(model, tokenizer, args.c3_path, args.xcopa_path)
         if swanlab_run:
             swanlab_run.log(eval_results, step=0)
         Logger(f'Initial benchmark results (step 0): {eval_results}')
