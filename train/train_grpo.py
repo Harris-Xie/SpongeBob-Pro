@@ -457,7 +457,10 @@ if __name__ == "__main__":
     swanlab_run = None
     if args.use_swanlab and is_main_process():
         import swanlab
-        swanlab.login(api_key="4jqfbuJs9zDRcLAMPoDQv")
+        api_key = os.environ.get("SWANLAB_API_KEY", "")
+        if not api_key:
+            raise ValueError("SWANLAB_API_KEY is not set. Export it (or source .env) or run with --use_swanlab 0.")
+        swanlab.login(api_key=api_key)
         swanlab_run = swanlab.init(project=args.swanlab_project, experiment_name=run_name,
                                    id=ckp_data.get('swanlab_id') if ckp_data else None, config=vars(args))
         Logger(f'SwanLab: {run_name}')
