@@ -9,6 +9,7 @@ class SpongeBobConfig(PretrainedConfig):
         hidden_size: 隐藏层维度
         num_hidden_layers: Transformer 层数
         num_attention_heads: 注意力头数
+        head_size: 每个注意力头的维度
         num_key_value_heads: KV 头数（用于 Grouped Query Attention）
         intermediate_size: FFN 中间层维度
         vocab_size: 词表大小
@@ -29,6 +30,7 @@ class SpongeBobConfig(PretrainedConfig):
             hidden_size: int = 768,
             num_hidden_layers: int = 12,
             num_attention_heads: int = 12,
+            head_size: int = 64,
             num_key_value_heads: int = 4,
             intermediate_size: int = 2048,
             vocab_size: int = 15000,
@@ -58,6 +60,7 @@ class SpongeBobConfig(PretrainedConfig):
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
         self.max_position_embeddings = max_position_embeddings
+        self.head_size = head_size
         self.num_attention_heads = num_attention_heads
         self.num_hidden_layers = num_hidden_layers
         self.num_key_value_heads = num_key_value_heads

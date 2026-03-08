@@ -109,7 +109,7 @@ class Attention(nn.Module):
         self.num_heads = args.num_attention_heads  # Query 头数
         self.num_kv_heads = self.num_key_value_heads  # KV 头数
         self.n_rep = self.num_heads // self.num_kv_heads  # KV 重复次数
-        self.head_dim = args.hidden_size // args.num_attention_heads
+        self.head_dim = args.head_size
         
         # QKV 投影层
         self.q_proj = nn.Linear(args.hidden_size, args.num_attention_heads * self.head_dim, bias=False)
@@ -259,7 +259,7 @@ class SpongeBobBlock(nn.Module):
         super().__init__()
         self.num_attention_heads = config.num_attention_heads
         self.hidden_size = config.hidden_size
-        self.head_dim = config.hidden_size // config.num_attention_heads
+        self.head_dim = config.head_size
         self.self_attn = Attention(config)
 
         self.layer_id = layer_id
@@ -309,7 +309,7 @@ class SpongeBobModel(nn.Module):
 
         # 预计算 RoPE 频率（注册为 buffer，不参与训练但会保存在模型中）
         freqs_cos, freqs_sin = precompute_freqs_cis(
-            dim=config.hidden_size // config.num_attention_heads,
+            dim=config.head_size,
             end=config.max_position_embeddings,
             rope_base=config.rope_theta
         )
