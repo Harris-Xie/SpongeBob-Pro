@@ -29,6 +29,7 @@ warnings.filterwarnings('ignore')
 def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=None, warmup_steps=None, full_save_dir=None):
     start_time = time.time()
     for step, (input_ids, labels) in enumerate(loader, start=start_step + 1):
+        iter_start_time = time.time()
         input_ids = input_ids.to(args.device)
         labels = labels.to(args.device)
         current_step = epoch * iters + step
@@ -50,15 +51,28 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
             optimizer.zero_grad(set_to_none=True)
 
         global_step = epoch * iters + step
+        iter_spend_time = time.time() - iter_start_time
 
         if step % args.log_interval == 0 or step == iters - 1:
             spend_time = time.time() - start_time
             current_loss = loss.item() * args.accumulation_steps
             current_lr = optimizer.param_groups[-1]['lr']
             eta_min = spend_time / (step + 1) * iters // 60 - spend_time // 60
-            Logger(f'Epoch:[{epoch + 1}/{args.epochs}]({step}/{iters}), loss: {current_loss:.4f}, lr: {current_lr:.8f}, epoch_time: {eta_min:.1f}min')
+            Logger(
+                f'Epoch:[{epoch + 1}/{args.epochs}]({step}/{iters}), '
+                f'loss: {current_loss:.4f}, lr: {current_lr:.8f}, '
+                f'spend_time: {iter_spend_time:.4f}s, epoch_time: {eta_min:.1f}min'
+            )
             if swanlab:
-                swanlab.log({"loss": current_loss, "learning_rate": current_lr, "eta_time": eta_min}, step=global_step)
+                swanlab.log(
+                    {
+                        "loss": current_loss,
+                        "learning_rate": current_lr,
+                        "spend_time": iter_spend_time,
+                        "eta_time": eta_min,
+                    },
+                    step=global_step,
+                )
 
         # 保存 checkpoint
         if global_step % args.save_interval == 0 or step == iters - 1:

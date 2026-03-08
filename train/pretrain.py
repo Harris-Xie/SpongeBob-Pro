@@ -60,6 +60,7 @@ warnings.filterwarnings('ignore')
 def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=None, warmup_steps=None, full_save_dir=None):
     start_time = time.time()
     for step, (input_ids, labels) in enumerate(loader, start=start_step + 1):
+        iter_start_time = time.time()
         input_ids = input_ids.to(args.device)
         labels = labels.to(args.device)
         current_step = epoch * iters + step
@@ -83,14 +84,28 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
             optimizer.zero_grad(set_to_none=True)
 
         global_step = epoch * iters + step
+        iter_spend_time = time.time() - iter_start_time
         
         if step % args.log_interval == 0 or step == iters - 1:
             spend_time = time.time() - start_time
             current_loss = loss.item() * args.accumulation_steps
             current_lr = optimizer.param_groups[-1]['lr']
             eta_min = spend_time / (step + 1) * iters // 60 - spend_time // 60
-            Logger(f'Epoch:[{epoch + 1}/{args.epochs}]({step}/{iters}), loss: {current_loss:.4f}, lr: {current_lr:.8f}, epoch_time: {eta_min:.1f}min')
-            if swanlab: swanlab.log({"loss": current_loss, "learning_rate": current_lr, "eta_time": eta_min}, step=global_step)
+            Logger(
+                f'Epoch:[{epoch + 1}/{args.epochs}]({step}/{iters}), '
+                f'loss: {current_loss:.4f}, lr: {current_lr:.8f}, '
+                f'spend_time: {iter_spend_time:.4f}s, epoch_time: {eta_min:.1f}min'
+            )
+            if swanlab:
+                swanlab.log(
+                    {
+                        "loss": current_loss,
+                        "learning_rate": current_lr,
+                        "spend_time": iter_spend_time,
+                        "eta_time": eta_min,
+                    },
+                    step=global_step,
+                )
         
         # 保存 checkpoint [DDP] 仅主进程写盘；without_ddp 无 is_main_process() 判断
         if (global_step % args.save_interval == 0 or step == iters - 1) and is_main_process():
@@ -149,6 +164,15 @@ if __name__ == "__main__":
     parser.add_argument("--save_interval", type=int, default=3000, help="模型保存间隔")
     parser.add_argument('--hidden_size', default=768, type=int, help="隐藏层维度")
     parser.add_argument('--num_hidden_layers', default=12, type=int, help="隐藏层数量")
+    parser.add_argument("--num_attention_heads", type=int, default=12, help="注意力头数")
+    parser.add_argument("--head_size", type=int, required=True, help="每个注意力头的维度")
+    parser.add_argument("--num_key_value_heads", type=int, default=4, help="KV 头数（GQA）")
+    parser.add_argument("--intermediate_size", type=int, default=2048, help="FFN 中间层维度")
+    parser.add_argument("--vocab_size", type=int, default=15000, help="词表大小")
+    parser.add_argument("--max_position_embeddings", type=int, default=32768, help="RoPE 最大位置长度")
+    parser.add_argument("--rope_theta", type=float, default=10000.0, help="RoPE 基础频率")
+    parser.add_argument("--hidden_act", type=str, default="silu", help="激活函数")
+    parser.add_argument("--dropout", type=float, default=0.0, help="Dropout 比例")
     parser.add_argument('--max_seq_len', default=512, type=int, help="序列长度")
     parser.add_argument("--data_path", type=str, default="", help="预处理后的.bin文件路径")
     parser.add_argument('--from_weight', default='none', type=str, help="基于哪个权重训练，为none则从头开始")
@@ -178,14 +202,57 @@ if __name__ == "__main__":
         raise ValueError(
             f"global_batch_size ({args.global_batch_size}) must be divisible by world_size ({world_size})."
         )
+    if args.hidden_size <= 0:
+        raise ValueError(f"hidden_size must be positive, got {args.hidden_size}.")
+    if args.num_hidden_layers <= 0:
+        raise ValueError(f"num_hidden_layers must be positive, got {args.num_hidden_layers}.")
+    if args.num_attention_heads <= 0:
+        raise ValueError(f"num_attention_heads must be positive, got {args.num_attention_heads}.")
+    if args.head_size <= 0:
+        raise ValueError(f"head_size must be positive, got {args.head_size}.")
+    if args.head_size % 2 != 0:
+        raise ValueError(f"head_size must be even for RoPE, got {args.head_size}.")
+    if args.num_key_value_heads <= 0:
+        raise ValueError(f"num_key_value_heads must be positive, got {args.num_key_value_heads}.")
+    if args.intermediate_size <= 0:
+        raise ValueError(f"intermediate_size must be positive, got {args.intermediate_size}.")
+    if args.vocab_size <= 0:
+        raise ValueError(f"vocab_size must be positive, got {args.vocab_size}.")
+    if args.max_seq_len <= 0:
+        raise ValueError(f"max_seq_len must be positive, got {args.max_seq_len}.")
+    if args.max_position_embeddings < args.max_seq_len:
+        raise ValueError(
+            f"max_position_embeddings ({args.max_position_embeddings}) must be >= max_seq_len ({args.max_seq_len})."
+        )
+    if args.rope_theta <= 0:
+        raise ValueError(f"rope_theta must be positive, got {args.rope_theta}.")
+    if not 0.0 <= args.dropout < 1.0:
+        raise ValueError(f"dropout must be in [0, 1), got {args.dropout}.")
+    if args.num_attention_heads % args.num_key_value_heads != 0:
+        raise ValueError(
+            "num_attention_heads "
+            f"({args.num_attention_heads}) must be divisible by num_key_value_heads ({args.num_key_value_heads})."
+        )
     args.batch_size = args.global_batch_size // world_size
 
     # ========== 2. 配置目录、模型参数、检查ckp ==========
-    lm_config = SpongeBobConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers)
+    lm_config = SpongeBobConfig(
+        hidden_size=args.hidden_size,
+        num_hidden_layers=args.num_hidden_layers,
+        num_attention_heads=args.num_attention_heads,
+        head_size=args.head_size,
+        num_key_value_heads=args.num_key_value_heads,
+        intermediate_size=args.intermediate_size,
+        vocab_size=args.vocab_size,
+        max_position_embeddings=args.max_position_embeddings,
+        rope_theta=args.rope_theta,
+        hidden_act=args.hidden_act,
+        dropout=args.dropout,
+    )
     
     # 生成 run_name（用于后续创建子目录）
     run_name = (
-        f"h{args.hidden_size}_l{args.num_hidden_layers}_gbs{args.global_batch_size}"
+        f"h{args.hidden_size}_hd{args.head_size}_hn{args.num_attention_heads}_l{args.num_hidden_layers}_gbs{args.global_batch_size}"
         f"_lr{args.learning_rate}_{time.strftime('%Y%m%d_%H%M%S')}"
     )
     full_save_dir = os.path.join(args.save_dir, run_name)
@@ -233,7 +300,10 @@ if __name__ == "__main__":
         Logger(f'Loading model from {args.from_weight}')
         model = SpongeBobForCausalLM.from_pretrained(args.from_weight)
     else:
-        Logger(f'Creating new model: hidden_size={args.hidden_size}, num_layers={args.num_hidden_layers}')
+        Logger(
+            f'Creating new model: hidden_size={args.hidden_size}, head_size={args.head_size}, '
+            f'num_layers={args.num_hidden_layers}'
+        )
         model = SpongeBobForCausalLM(lm_config)
     
     model = model.to(args.device)
