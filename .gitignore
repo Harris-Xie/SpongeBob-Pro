@@ -4,6 +4,4 @@ __pycache__/
 AGENTS.md
 
 .env
-data/pretrain_data/*.bin
-data/pretrain_smoke/
-data/demo/
+data/
