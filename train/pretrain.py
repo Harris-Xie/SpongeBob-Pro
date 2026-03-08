@@ -133,7 +133,12 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", type=str, default="../pretrain_out/exp_mini", help="模型保存根目录")
     parser.add_argument('--save_weight', default='pretrain', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=2, help="训练轮数")
-    parser.add_argument("--batch_size", type=int, default=128, help="batch size")
+    parser.add_argument(
+        "--global_batch_size",
+        type=int,
+        default=None,
+        help="全局 batch size（所有 GPU 总和）。不传时默认 = 128 * world_size。",
+    )
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="初始学习率")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="训练设备")
     parser.add_argument("--dtype", type=str, default="bfloat16", help="混合精度类型")
@@ -162,12 +167,27 @@ if __name__ == "__main__":
     # without_ddp 无此步骤，直接进入配置目录
     local_rank = init_distributed_mode()  # 多卡时初始化进程组并返回本卡 GPU 号
     if dist.is_initialized(): args.device = f"cuda:{local_rank}"  # DDP 时每进程用不同 GPU
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+
+    # ========== 1.5. 由 global_batch_size 推导 per-rank batch_size ==========
+    if args.global_batch_size is None:
+        args.global_batch_size = 128 * world_size
+    if args.global_batch_size <= 0:
+        raise ValueError(f"global_batch_size must be positive, got {args.global_batch_size}.")
+    if args.global_batch_size % world_size != 0:
+        raise ValueError(
+            f"global_batch_size ({args.global_batch_size}) must be divisible by world_size ({world_size})."
+        )
+    args.batch_size = args.global_batch_size // world_size
 
     # ========== 2. 配置目录、模型参数、检查ckp ==========
     lm_config = SpongeBobConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers)
     
     # 生成 run_name（用于后续创建子目录）
-    run_name = f"h{args.hidden_size}_l{args.num_hidden_layers}_bs{args.batch_size}_lr{args.learning_rate}_{time.strftime('%Y%m%d_%H%M%S')}"
+    run_name = (
+        f"h{args.hidden_size}_l{args.num_hidden_layers}_gbs{args.global_batch_size}"
+        f"_lr{args.learning_rate}_{time.strftime('%Y%m%d_%H%M%S')}"
+    )
     full_save_dir = os.path.join(args.save_dir, run_name)
     os.makedirs(full_save_dir, exist_ok=True)
     
@@ -269,7 +289,6 @@ if __name__ == "__main__":
 
     # ========== 8. 计算总步数 ==========
     # [DDP] 多卡时除以 world_size；without_ddp 为 len(train_ds) // args.batch_size
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
     steps_per_epoch = len(train_ds) // (args.batch_size * world_size)
     total_steps = args.epochs * steps_per_epoch
     warmup_steps = int(total_steps * 0.03)  # 3% warmup
@@ -288,7 +307,10 @@ if __name__ == "__main__":
         model.train()
     
     # ========== 9. 开始训练 ==========
-    Logger(f'Starting training: {args.epochs} epochs, batch_size={args.batch_size}')
+    Logger(
+        f'Starting training: {args.epochs} epochs, '
+        f'global_batch_size={args.global_batch_size} (batch_size per rank={args.batch_size})'
+    )
     for epoch in range(start_epoch, args.epochs):
         train_sampler and train_sampler.set_epoch(epoch)  # [DDP] 多卡时打乱各卡分片；without_ddp 无此行
         # 用 epoch 固定种子，保证续训时同一 epoch 的打乱顺序与初次训练完全一致

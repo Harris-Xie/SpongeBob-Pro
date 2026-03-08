@@ -124,7 +124,12 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", type=str, default="../out_sft/exp_1", help="模型保存目录")
     parser.add_argument('--save_weight', default='sft', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=2, help="训练轮数（SFT 推荐 2-3 epoch，过多会过拟合）")
-    parser.add_argument("--batch_size", type=int, default=128, help="batch size")
+    parser.add_argument(
+        "--global_batch_size",
+        type=int,
+        default=None,
+        help="全局 batch size（所有 GPU 总和）。不传时默认 = 128 * world_size。",
+    )
     parser.add_argument("--learning_rate", type=float, default=2e-5, help="初始学习率（SFT 推荐 1e-5 ~ 1e-4，从预训练继续可用 5e-5）")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="训练设备")
     parser.add_argument("--dtype", type=str, default="bfloat16", help="混合精度类型")
@@ -153,12 +158,27 @@ if __name__ == "__main__":
     # ========== 1. 初始化环境和随机种子 ==========
     local_rank = init_distributed_mode()
     if dist.is_initialized(): args.device = f"cuda:{local_rank}"
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+
+    # ========== 1.5. 由 global_batch_size 推导 per-rank batch_size ==========
+    if args.global_batch_size is None:
+        args.global_batch_size = 128 * world_size
+    if args.global_batch_size <= 0:
+        raise ValueError(f"global_batch_size must be positive, got {args.global_batch_size}.")
+    if args.global_batch_size % world_size != 0:
+        raise ValueError(
+            f"global_batch_size ({args.global_batch_size}) must be divisible by world_size ({world_size})."
+        )
+    args.batch_size = args.global_batch_size // world_size
 
     # ========== 2. 配置目录、模型参数、检查 ckp ==========
     lm_config = SpongeBobConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers)
 
     # 与 pretrain 一致：用 run_name 做子目录
-    run_name = f"h{args.hidden_size}_l{args.num_hidden_layers}_bs{args.batch_size}_lr{args.learning_rate}"
+    run_name = (
+        f"h{args.hidden_size}_l{args.num_hidden_layers}_global_batch_size{args.global_batch_size}"
+        f"_lr{args.learning_rate}"
+    )
     full_save_dir = os.path.join(args.save_dir, run_name)
     os.makedirs(full_save_dir, exist_ok=True)
 
@@ -250,7 +270,6 @@ if __name__ == "__main__":
         Logger('DDP ready')
 
     # ========== 8. 计算总步数（考虑 DDP 分片）==========
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
     steps_per_epoch = len(train_ds) // (args.batch_size * world_size)
     total_steps = args.epochs * steps_per_epoch
     warmup_steps = int(total_steps * 0.1)  # 10% warmup（SFT 推荐更长 warmup）
@@ -277,7 +296,10 @@ if __name__ == "__main__":
         Logger('[eval] step=0 初始评测完成，Judge 后台运行中...')
 
     # ========== 9. 开始训练 ==========
-    Logger(f'Starting training: {args.epochs} epochs, batch_size={args.batch_size}')
+    Logger(
+        f'Starting training: {args.epochs} epochs, '
+        f'global_batch_size={args.global_batch_size} (batch_size per rank={args.batch_size})'
+    )
     for epoch in range(start_epoch, args.epochs):
         train_sampler and train_sampler.set_epoch(epoch)
         indices = torch.randperm(len(train_ds)).tolist()

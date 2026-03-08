@@ -99,7 +99,12 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", type=str, default="../pretrain_out", help="模型保存根目录")
     parser.add_argument('--save_weight', default='pretrain', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=2, help="训练轮数")
-    parser.add_argument("--batch_size", type=int, default=128, help="batch size")
+    parser.add_argument(
+        "--global_batch_size",
+        type=int,
+        default=None,
+        help="全局 batch size（所有 GPU 总和）。单卡脚本不传时默认 = 128。",
+    )
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="初始学习率")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="训练设备")
     parser.add_argument("--dtype", type=str, default="bfloat16", help="混合精度类型")
@@ -121,9 +126,24 @@ if __name__ == "__main__":
     parser.add_argument("--eval_interval", type=int, default=100, help="评测间隔步数")
     args = parser.parse_args()
 
+    # ========== 0. 由 global_batch_size 推导 batch_size ==========
+    world_size = 1
+    if args.global_batch_size is None:
+        args.global_batch_size = 128 * world_size
+    if args.global_batch_size <= 0:
+        raise ValueError(f"global_batch_size must be positive, got {args.global_batch_size}.")
+    if args.global_batch_size % world_size != 0:
+        raise ValueError(
+            f"global_batch_size ({args.global_batch_size}) must be divisible by world_size ({world_size})."
+        )
+    args.batch_size = args.global_batch_size // world_size
+
     # ========== 1. 配置目录、模型参数、检查 ckp ==========
     lm_config = SpongeBobConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers)
-    run_name = f"h{args.hidden_size}_l{args.num_hidden_layers}_bs{args.batch_size}_lr{args.learning_rate}"
+    run_name = (
+        f"h{args.hidden_size}_l{args.num_hidden_layers}_global_batch_size{args.global_batch_size}"
+        f"_lr{args.learning_rate}"
+    )
     full_save_dir = os.path.join(args.save_dir, run_name)
     os.makedirs(full_save_dir, exist_ok=True)
 
@@ -218,7 +238,10 @@ if __name__ == "__main__":
         model.train()
 
     # ========== 9. 训练循环 ==========
-    Logger(f'Starting training: {args.epochs} epochs, batch_size={args.batch_size} (single GPU)')
+    Logger(
+        f'Starting training: {args.epochs} epochs, '
+        f'global_batch_size={args.global_batch_size} (batch_size={args.batch_size}, single GPU)'
+    )
     for epoch in range(start_epoch, args.epochs):
         indices = torch.randperm(len(train_ds)).tolist()
         skip = start_step if (epoch == start_epoch and start_step > 0) else 0

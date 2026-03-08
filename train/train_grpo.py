@@ -390,7 +390,12 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", type=str, default="../out_grpo/exp_1")
     parser.add_argument('--save_weight', default='grpo', type=str)
     parser.add_argument("--epochs", type=int, default=900)
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument(
+        "--global_batch_size",
+        type=int,
+        default=None,
+        help="全局 batch size（所有 GPU 总和）。不传时默认 = 16 * world_size。",
+    )
     parser.add_argument("--learning_rate", type=float, default=5e-7)
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dtype", type=str, default="bfloat16")
@@ -430,11 +435,26 @@ if __name__ == "__main__":
     local_rank = init_distributed_mode()
     if dist.is_initialized(): 
         args.device = f"cuda:{local_rank}"
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+
+    # 由 global_batch_size 推导 per-rank batch_size
+    if args.global_batch_size is None:
+        args.global_batch_size = 16 * world_size
+    if args.global_batch_size <= 0:
+        raise ValueError(f"global_batch_size must be positive, got {args.global_batch_size}.")
+    if args.global_batch_size % world_size != 0:
+        raise ValueError(
+            f"global_batch_size ({args.global_batch_size}) must be divisible by world_size ({world_size})."
+        )
+    args.batch_size = args.global_batch_size // world_size
     
     # 配置
     lm_config = SpongeBobConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers,
                                 max_position_embeddings=args.max_seq_len + args.max_gen_len)
-    run_name = f"h{args.hidden_size}_l{args.num_hidden_layers}_bs{args.batch_size}_lr{args.learning_rate}"
+    run_name = (
+        f"h{args.hidden_size}_l{args.num_hidden_layers}_global_batch_size{args.global_batch_size}"
+        f"_lr{args.learning_rate}"
+    )
     full_save_dir = os.path.join(args.save_dir, run_name)
     os.makedirs(full_save_dir, exist_ok=True)
     
@@ -505,9 +525,11 @@ if __name__ == "__main__":
         model = DDP(model, device_ids=[local_rank])
     
     # 训练
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
     steps_per_epoch = len(train_ds) // (args.batch_size * world_size)
-    Logger(f'Training: {args.epochs} epochs, {steps_per_epoch} steps/epoch')
+    Logger(
+        f'Training: {args.epochs} epochs, {steps_per_epoch} steps/epoch, '
+        f'global_batch_size={args.global_batch_size} (batch_size per rank={args.batch_size})'
+    )
     
     for epoch in range(start_epoch, args.epochs):
         train_sampler and train_sampler.set_epoch(epoch)
