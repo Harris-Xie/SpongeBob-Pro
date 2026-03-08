@@ -5,3 +5,4 @@ AGENTS.md
 
 .env
 data/
+pretrain_out/

@@ -1,0 +1,7 @@
+numpy
+tqdm
+transformers
+tokenizers
+modelscope
+swanlab
+torch
