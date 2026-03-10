@@ -8,6 +8,7 @@ from typing import Optional, Tuple, List, Union
 from transformers import PreTrainedModel, GenerationMixin, PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from .config import SpongeBobConfig
+from .attn_output_gate import AttnOutputGate
 
 
 class RMSNorm(torch.nn.Module):
@@ -125,6 +126,14 @@ class Attention(nn.Module):
         # Flash Attention 支持检测
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention') and args.flash_attn
 
+        # Gated attention
+        if getattr(args, "attn_gate_type", "none") != "none":
+            self.attn_output_gate = AttnOutputGate(args)
+        else:
+            self.attn_output_gate = None
+
+
+
     def forward(self,
                 x: torch.Tensor,
                 position_embeddings: Tuple[torch.Tensor, torch.Tensor],
@@ -219,6 +228,11 @@ class Attention(nn.Module):
             scores = F.softmax(scores.float(), dim=-1).type_as(xq)
             scores = self.attn_dropout(scores)
             output = scores @ xv
+
+        # Gated attention
+        if self.attn_output_gate is not None:
+            output = output * self.attn_output_gate(x)
+
 
         # 恢复形状并输出投影
         output = output.transpose(1, 2).reshape(bsz, seq_len, -1)

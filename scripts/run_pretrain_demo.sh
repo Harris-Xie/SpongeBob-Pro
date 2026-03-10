@@ -60,6 +60,12 @@ ROPE_THETA="${ROPE_THETA:-10000.0}"
 HIDDEN_ACT="${HIDDEN_ACT:-silu}"
 DROPOUT="${DROPOUT:-0.0}"
 
+# gated attention
+ATTN_GATE_TYPE="${ATTN_GATE_TYPE:-none}"
+ATTN_GATE_INIT_BIAS="${ATTN_GATE_INIT_BIAS:-4.0}"
+
+
+
 # 3) 分布式参数
 # NPROC_PER_NODE=1 表示单卡；大于 1 表示单机多卡
 NPROC_PER_NODE="${NPROC_PER_NODE:-2}"
@@ -68,7 +74,7 @@ MASTER_PORT="${MASTER_PORT:-29500}"
 # 4）评测/swanlab记录参数
 EVAL_BENCH="${EVAL_BENCH:-1}"
 USE_SWANLAB="${USE_SWANLAB:-1}"
-SWANLAB_PROJECT="${SWANLAB_PROJECT:-SpongeBob-Pretrain-New}"
+SWANLAB_PROJECT="${SWANLAB_PROJECT:-SpongeBob-Pretrain-Test}"
 
 if [[ ! -f "$DATA_BIN" ]]; then
   echo "[error] data file not found: $DATA_BIN"
@@ -104,6 +110,9 @@ TRAIN_ARGS=(
   --eval_bench "$EVAL_BENCH"
   --swanlab_project "$SWANLAB_PROJECT"
   --head_size "$HEAD_SIZE"
+  # gated attention
+  --attn_gate_type "$ATTN_GATE_TYPE"
+  --attn_gate_init_bias "$ATTN_GATE_INIT_BIAS"
 )
 
 echo "[info] data_path=$DATA_BIN"
@@ -126,6 +135,8 @@ echo "[info] max_position_embeddings=$MAX_POSITION_EMBEDDINGS"
 echo "[info] rope_theta=$ROPE_THETA"
 echo "[info] hidden_act=$HIDDEN_ACT"
 echo "[info] dropout=$DROPOUT"
+echo "[info] attn_gate_type=$ATTN_GATE_TYPE"
+echo "[info] attn_gate_init_bias=$ATTN_GATE_INIT_BIAS"
 echo "[info] nproc_per_node=$NPROC_PER_NODE"
 
 if [[ "$NPROC_PER_NODE" -eq 1 ]]; then

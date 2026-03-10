@@ -50,6 +50,11 @@ class SpongeBobConfig(PretrainedConfig):
             
             # 优化选项
             flash_attn: bool = True,
+
+            # Gated attention
+            attn_gate_type: str = 'none',
+            attn_gate_init_bias: float = '4.0',
+
             **kwargs
     ):
         super().__init__(**kwargs)
@@ -68,3 +73,9 @@ class SpongeBobConfig(PretrainedConfig):
         self.rms_norm_eps = rms_norm_eps
         self.rope_theta = rope_theta
         self.flash_attn = flash_attn
+
+        # Gated attention
+        if attn_gate_type not in ("none", "token", "head", "channel"):
+            raise ValueError(f'Invalid attn_gate_type={attn_gate_type}')
+        self.attn_gate_type = attn_gate_type
+        self.attn_gate_init_bias = attn_gate_init_bias

@@ -185,6 +185,10 @@ if __name__ == "__main__":
     parser.add_argument("--tokenizer_path", type=str, default="tokenizer_15k", help="benchmark评测使用的tokenizer路径")
     parser.add_argument("--c3_path", type=str, default=os.path.join(_BENCH_PRETRAIN_DIR, "clue_c3_eval_500.jsonl"), help="C3 benchmark数据路径")
     parser.add_argument("--xcopa_path", type=str, default=os.path.join(_BENCH_PRETRAIN_DIR, "xcopa_zh_merged.jsonl"), help="XCOPA benchmark数据路径")
+    # gated attention
+    parser.add_argument("--attn_gate_type", type=str, default="none", help="注意力门控类型")
+    parser.add_argument("--attn_gate_init_bias", type=float, default=4.0, help="注意力门控投影层bias初始值")
+
     args = parser.parse_args()
 
     # ========== 1. [DDP] 初始化分布式环境 ==========
@@ -248,11 +252,14 @@ if __name__ == "__main__":
         rope_theta=args.rope_theta,
         hidden_act=args.hidden_act,
         dropout=args.dropout,
+        # gated attention
+        attn_gate_type=args.attn_gate_type,
+        attn_gate_init_bias= args.attn_gate_init_bias
     )
     
     # 生成 run_name（用于后续创建子目录）
     run_name = (
-        f"h{args.hidden_size}_hd{args.head_size}_hn{args.num_attention_heads}_l{args.num_hidden_layers}_gbs{args.global_batch_size}"
+        f"gatetype_{args.attn_gate_type}_gatebias_{args.attn_gate_init_bias}_h{args.hidden_size}_hd{args.head_size}_hn{args.num_attention_heads}_l{args.num_hidden_layers}_gbs{args.global_batch_size}"
         f"_lr{args.learning_rate}_{time.strftime('%Y%m%d_%H%M%S')}"
     )
     full_save_dir = os.path.join(args.save_dir, run_name)
