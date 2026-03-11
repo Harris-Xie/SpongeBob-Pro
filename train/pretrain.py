@@ -28,6 +28,7 @@ from model.model_spongebob_pro import SpongeBobForCausalLM
 from dataset.pretrain_dataset import PretrainDataset
 from utils import get_lr, Logger, is_main_process, init_distributed_mode, SkipBatchSampler  # [DDP] is_main_process/init_distributed_mode 仅 DDP 用；without_ddp 无
 from benchmark.evaluator import run_benchmark
+from model.attn_output_gate import AttnOutputGate
 
 _BENCH_PRETRAIN_DIR = os.path.join(_REPO_ROOT, "benchmark")
 
@@ -55,6 +56,37 @@ warnings.filterwarnings('ignore')
 
 #     # 3. 更新缩放因子（根据是否有溢出来决定下次放大多少）
 #     scaler.update()
+
+attn_gate_modules = []
+
+def collect_attn_gate_stats():
+
+    if not attn_gate_modules:
+        return {}
+
+    final_sum = 0.0
+    final_low = 0.0
+    final_high = 0.0
+    final_num = 0
+    
+    for gate in attn_gate_modules:
+        stats = gate.monitor_stats
+        if stats is None:
+            continue
+        gate_sum, gate_low, gate_high, gate_num = stats
+        final_sum += gate_sum
+        final_low += gate_low
+        final_high += gate_high
+        final_num += gate_num
+
+    return {
+        "attn_gate/mean": final_sum / final_num,
+        "attn_gate/low_frac": final_low / final_num,
+        "attn_gate/high_frac": final_high / final_num,
+    }
+
+
+
 
 
 def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=None, warmup_steps=None, full_save_dir=None):
@@ -97,13 +129,15 @@ def train_epoch(epoch, loader, iters, start_step=0, swanlab=None, total_steps=No
                 f'spend_time: {iter_spend_time:.4f}s, epoch_time: {eta_min:.1f}min'
             )
             if swanlab:
-                swanlab.log(
-                    {
+                log_dict = {
                         "loss": current_loss,
                         "learning_rate": current_lr,
                         "spend_time": iter_spend_time,
                         "eta_time": eta_min,
-                    },
+                    }
+                log_dict.update(collect_attn_gate_stats())
+                swanlab.log(
+                    log_dict,
                     step=global_step,
                 )
         
@@ -178,6 +212,7 @@ if __name__ == "__main__":
     parser.add_argument('--from_weight', default='none', type=str, help="基于哪个权重训练，为none则从头开始")
     parser.add_argument('--from_resume', default=0, type=int, choices=[0, 1], help="是否自动检测&续训（0=否，1=是）")
     parser.add_argument("--use_swanlab", type=int, default=1, choices=[0, 1], help="是否使用swanlab（0=否，1=是）")
+    parser.add_argument("--enable_gate_monitor", type=int, default=1, choices=[0, 1], help="是否启用gating score监控机制）")
     parser.add_argument("--swanlab_project", type=str, default="SpongeBob-Pretrain", help="swanlab项目名")
     parser.add_argument("--use_compile", default=1, type=int, choices=[0, 1], help="是否使用torch.compile加速（0=否，1=是）")
     parser.add_argument("--eval_bench", default=1, type=int, choices=[0, 1], help="是否评测benchmark（0=否，1=是）")
@@ -238,6 +273,12 @@ if __name__ == "__main__":
             f"({args.num_attention_heads}) must be divisible by num_key_value_heads ({args.num_key_value_heads})."
         )
     args.batch_size = args.global_batch_size // world_size
+
+    use_attn_gate_monitor = (args.enable_gate_monitor == 1) and (args.use_swanlab == 1) and (args.attn_gate_type != "none")
+    if use_attn_gate_monitor and args.use_compile == 1:
+        args.use_compile = 0
+        Logger("开启 gate 监控，自动关闭torch.compile")
+
 
     # ========== 2. 配置目录、模型参数、检查ckp ==========
     lm_config = SpongeBobConfig(
@@ -340,6 +381,13 @@ if __name__ == "__main__":
     scaler = torch.amp.GradScaler('cuda', enabled=(args.dtype == 'float16'))
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.1)
     Logger('Optimizer ready')
+
+    # ========== 5.1 初始化 gate monitor ==========
+    if is_main_process():
+        attn_gate_modules = [m for m in model.modules() if isinstance(m, AttnOutputGate)]
+        for gate in attn_gate_modules:
+            gate.monitor_enabled = True
+        
     
     # ========== 6. 从ckp恢复状态 ==========
     start_epoch, start_step = 0, 0

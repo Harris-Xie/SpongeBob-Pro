@@ -21,6 +21,9 @@ class AttnOutputGate(nn.Module):
         nn.init.zeros_(self.proj.weight)
         nn.init.constant_(self.proj.bias, self.init_bias)
 
+        self.monitor_enabled = False
+        self.monitor_stats = None
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         input:
@@ -42,5 +45,14 @@ class AttnOutputGate(nn.Module):
         elif self.gate_type == 'channel':
             gate = gate.view(bsz, seq_len, self.config.num_attention_heads, self.config.head_size).permute(0, 2, 1, 3) # (B, S, nh*hd) - > (B, nh, S, hd)
 
+        if self.monitor_enabled:
+            gate_for_stats = gate.detach()
+
+            self.monitor_stats = (
+                float(gate_for_stats.sum(dtype=torch.float32).item()),
+                float((gate_for_stats < 0.1).sum().item()),
+                float((gate_for_stats > 0.9).sum().item()),
+                gate_for_stats.numel()
+            )
 
         return gate
