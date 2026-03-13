@@ -53,7 +53,7 @@ class SpongeBobConfig(PretrainedConfig):
 
             # Gated attention
             attn_gate_type: str = 'none',
-            attn_gate_init_bias: float = '4.0',
+            attn_gate_init_bias: float = 4.0,
 
             **kwargs
     ):
